@@ -1,6 +1,6 @@
 # front-Docker
 
-Proyecto de angular para un front para la materia de CI/CD POLI
+Proyecto de angular para un front para la materia de CI/CD POLI.
 
 # 📦 Requisitos
     Docker (versión 20 o superior recomendada)
