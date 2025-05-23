@@ -2,8 +2,6 @@
 
 Proyecto de angular para un front para la materia de CI/CD POLI
 
-TEST (Luisa)
-
 # 📦 Requisitos
     Docker (versión 20 o superior recomendada)
     Docker Compose
