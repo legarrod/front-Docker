@@ -30,6 +30,13 @@ Proyecto de angular para un front para la materia de CI/CD POLI
         - .:/app
         - /app/node_modules
         command: npm start
+# 📬 Autor
+    - OSCAR SANTIAGO AMADOR HERNANDEZ
+    - Rodriguez Pulido German Dario
+    - LUIS EVELIO GARCIA RODRIGUEZ
+    - ROBERT SANTIAGO SANTANA ORTEGA
+    - LUISA FERNANDA WOO GARCIA
+    
 # 📜 package.json - scripts
     "scripts": {
     "start": "ng serve --host 0.0.0.0"
