@@ -1,20 +1,23 @@
 # Usa Node oficial
 FROM node:20-alpine
 
-# Directorio de trabajo
+# Instala Angular CLI globalmente
+RUN npm install -g @angular/cli
+
+# Crea el directorio de trabajo
 WORKDIR /app
 
-# Copia los archivos de dependencias primero
+# Copia archivos de dependencias
 COPY package*.json ./
 
 # Instala dependencias
 RUN npm install
 
-# Copia el resto del código
+# Copia el resto de archivos
 COPY . .
 
-# Expone el puerto de Angular
+# Expone el puerto
 EXPOSE 4200
 
-# Comando para iniciar Angular (modo desarrollo)
+# Inicia la app en modo desarrollo (asegúrate de usar --host 0.0.0.0)
 CMD ["npm", "start"]

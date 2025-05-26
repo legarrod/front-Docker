@@ -1,0 +1,56 @@
+<!-- src/app/components/user-list/user-list.component.html -->
+<div class="container">
+  <h2>Lista de Usuarios</h2>
+  
+  <div class="actions">
+    <button 
+      (click)="loadUsers()" 
+      [disabled]="loading" 
+      class="btn-refresh"
+      [class.loading]="loading">
+      {{ loading ? 'Cargando...' : 'Actualizar Lista' }}
+    </button>
+  </div>
+
+  <!-- Estado de Error -->
+  <div *ngIf="error" class="error-message">
+    <div class="error-content">
+      <span class="error-icon">❌</span>
+      <p class="error-text">{{ error }}</p>
+      <button (click)="loadUsers()" class="btn-retry">Reintentar</button>
+    </div>
+  </div>
+
+  <!-- Estado de Carga -->
+  <div *ngIf="loading && !users.length" class="loading-state">
+    <div class="spinner"></div>
+    <p>Cargando usuarios...</p>
+  </div>
+
+  <!-- Estado Sin Datos -->
+  <div *ngIf="!loading && users.length === 0 && !error" class="no-data">
+    <span class="no-data-icon">📭</span>
+    <p>No hay usuarios disponibles</p>
+  </div>
+
+  <!-- Lista de Usuarios -->
+  <div *ngIf="users.length > 0" class="users-grid">
+    <div 
+      *ngFor="let user of users; trackBy: trackByUserId" 
+      class="user-card">
+      <div class="user-header">
+        <div class="user-avatar">
+          {{ user.name.charAt(0).toUpperCase() }}
+        </div>
+        <h3>{{ user.name }}</h3>
+      </div>
+      <div class="user-details">
+        <div class="detail-item">
+          <span class="detail-icon">📧</span>
+          <span class="detail-label">Email:</span>
+          <span class="detail-value">{{ user.email }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
