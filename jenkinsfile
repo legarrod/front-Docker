@@ -4,212 +4,91 @@ pipeline {
     parameters {
         string(name: 'DOCKER_TAG', defaultValue: 'latest', description: 'Docker tag for the image')
         choice(name: 'ENVIRONMENT', choices: ['development', 'staging', 'production'], description: 'Deployment environment')
-        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip unit tests')
-        booleanParam(name: 'SKIP_E2E_TESTS', defaultValue: false, description: 'Skip E2E tests')
-        booleanParam(name: 'SKIP_LINT', defaultValue: false, description: 'Skip linting')
-        booleanParam(name: 'FORCE_DEPLOY', defaultValue: false, description: 'Force deployment even if tests fail')
-        choice(name: 'BUILD_MODE', choices: ['production', 'development'], description: 'Angular build mode')
+    }
+    
+    tools {
+        nodejs 'NodeJS-18'
     }
     
     environment {
-        DOCKER_IMAGE = "angular-frontend"
+        DOCKER_IMAGE = "angular-app"
         DOCKER_TAG = "${params.DOCKER_TAG}"
-        NODE_ENV = "${params.ENVIRONMENT}"
-        CHROME_BIN = '/usr/bin/google-chrome'
-        PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
     }
     
     stages {
-        stage('Setup Node.js Alpine') {
-            steps {
-                echo "=== Setting up Node.js 20 Alpine environment ==="
-                script {
-                    docker.image('node:20-alpine').inside('-v /var/run/docker.sock:/var/run/docker.sock --user root') {
-                        sh '''
-                            echo "Installing required packages for Alpine..."
-                            apk update
-                            apk add --no-cache git bash curl wget ca-certificates python3 make g++ libc6-compat docker
-                            
-                            echo "Node.js version: $(node --version)"
-                            echo "NPM version: $(npm --version)"
-                            echo "Alpine setup complete!"
-                        '''
-                    }
-                }
-            }
-        }
-        
         stage('Checkout') {
             steps {
-                echo "Cleaning workspace and checking out code..."
-                deleteDir()
+                echo "Checking out code..."
                 checkout scm
-                
-                script {
-                    env.GIT_COMMIT_SHORT = sh(
-                        script: "git rev-parse --short HEAD",
-                        returnStdout: true
-                    ).trim()
-                    env.FULL_IMAGE_TAG = "${params.DOCKER_TAG}-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}"
-                }
-            }
-        }
-        
-        stage('Environment Info') {
-            steps {
-                script {
-                    docker.image('node:20-alpine').inside() {
-                        sh '''
-                            echo "=== Environment Information ==="
-                            echo "Node version: $(node --version)"
-                            echo "NPM version: $(npm --version)"
-                            echo "OS: $(cat /etc/os-release | grep PRETTY_NAME)"
-                            echo "Environment: ${NODE_ENV}"
-                            echo "Docker tag: ${DOCKER_TAG}"
-                            echo "Build mode: ${BUILD_MODE}"
-                            echo "Git commit: ${GIT_COMMIT_SHORT}"
-                            echo "Full image tag: ${FULL_IMAGE_TAG}"
-                            
-                            echo "=== Project structure ==="
-                            ls -la
-                            
-                            echo "=== Checking package.json ==="
-                            if [ -f "package.json" ]; then
-                                echo "✅ package.json found"
-                                cat package.json | grep -E '"@angular/core"|"@angular/cli"' || echo "Angular info not found in package.json"
-                            else
-                                echo "❌ package.json not found!"
-                                exit 1
-                            fi
-                        '''
-                    }
-                }
             }
         }
         
         stage('Install Dependencies') {
             steps {
-                echo "=== Installing Angular dependencies in Alpine ==="
-                script {
-                    docker.image('node:20-alpine').inside() {
-                        sh '''
-                            echo "Cleaning npm cache..."
-                            npm cache clean --force
-                            
-                            echo "Removing existing node_modules and lock files..."
-                            rm -rf node_modules package-lock.json
-                            
-                            echo "Installing dependencies with legacy peer deps..."
-                            npm install --legacy-peer-deps
-                            
-                            echo "Verifying Angular installation..."
-                            npm list --depth=0 | grep angular || echo "Angular dependencies installed"
-                            
-                            echo "✅ Dependencies installed successfully!"
-                        '''
-                    }
-                }
+                echo "Installing dependencies..."
+                sh '''
+                    npm install
+                '''
             }
         }
         
-        stage('Code Quality & Linting') {
-            when {
-                not {
-                    expression { return params.SKIP_LINT }
-                }
-            }
+        stage('Build Angular App') {
             steps {
-                echo "=== Running Angular linting ==="
-                script {
-                    docker.image('node:20-alpine').inside() {
-                        sh '''
-                            if grep -q '"lint"' package.json; then
-                                echo "Running Angular linting..."
-                                npm run lint || {
-                                    echo "⚠️ Linting failed but continuing..."
-                                    if [ "${FORCE_DEPLOY}" != "true" ]; then
-                                        echo "Set FORCE_DEPLOY=true to ignore linting errors"
-                                    fi
-                                }
-                            else
-                                echo "ℹ️ No lint script found, skipping linting..."
-                            fi
-                        '''
-                    }
-                }
+                echo "Building Angular application..."
+                sh '''
+                    npm run build
+                '''
             }
         }
         
-        stage('Build Angular Application') {
+        stage('Docker Build') {
             steps {
-                echo "=== Building Angular application in Alpine ==="
-                script {
-                    docker.image('node:20-alpine').inside() {
-                        def buildCommands = []
-                        
-                        if (params.BUILD_MODE == 'production') {
-                            buildCommands = [
-                                'npm run build:prod',
-                                'npm run build -- --configuration=production',
-                                'npm run build -- --prod',
-                                'npm run build'
-                            ]
-                        } else {
-                            buildCommands = [
-                                'npm run build:dev',
-                                'npm run build -- --configuration=development',
-                                'npm run build'
-                            ]
-                        }
-                        
-                        def buildSuccessful = false
-                        
-                        for (cmd in buildCommands) {
-                            if (!buildSuccessful) {
-                                echo "Attempting: ${cmd}"
-                                def result = sh(script: cmd, returnStatus: true)
-                                if (result == 0) {
-                                    echo "✅ Build successful with: ${cmd}"
-                                    buildSuccessful = true
-                                    break
-                                } else {
-                                    echo "❌ Failed: ${cmd}"
-                                }
-                            }
-                        }
-                        
-                        if (!buildSuccessful) {
-                            error("All build commands failed")
-                        }
-                        
-                        // Verificar resultado del build
-                        sh '''
-                            echo "=== Verifying build output ==="
-                            if [ -d "dist" ]; then
-                                echo "✅ dist directory found:"
-                                ls -la dist/
-                                find dist -name "*.js" -o -name "*.css" | head -10
-                            elif [ -d "build" ]; then
-                                echo "✅ build directory found:"
-                                ls -la build/
-                            else
-                                echo "❌ ERROR: No build output directory found"
-                                exit 1
-                            fi
-                        '''
-                    }
-                }
-            }
-            post {
-                always {
-                    script {
-                        // Archivar artifacts del build
-                        if (fileExists('dist')) {
-                            archiveArtifacts artifacts: 'dist/**/*', fingerprint: true, allowEmptyArchive: true
-                        } else if (fileExists('build')) {
-                            archiveArtifacts artifacts: 'build/**/*', fingerprint: true, allowEmptyArchive: true
-                        }
-                    }
-                }
+                echo "Building Docker image..."
+                sh '''
+                    # Crear Dockerfile básico si no existe
+                    if [ ! -f "Dockerfile" ]; then
+                        cat > Dockerfile << 'EOF'
+FROM nginx:alpine
+COPY dist/ /usr/share/nginx/html/
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+EOF
+                    fi
+                    
+                    docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                '''
             }
         }
+        
+        stage('Deploy') {
+            steps {
+                echo "Deploying to ${params.ENVIRONMENT}..."
+                sh '''
+                    CONTAINER_NAME="angular-frontend-dev"
+                    
+                    # Parar contenedor anterior si existe
+                    docker stop $CONTAINER_NAME || true
+                    docker rm $CONTAINER_NAME || true
+                    
+                    # Ejecutar nuevo contenedor
+                    docker run -d \
+                        --name $CONTAINER_NAME \
+                        -p 4200:80 \
+                        ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    
+                    echo "Deployment completed! App running on port 4200"
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "Pipeline completed successfully!"
+        }
+        
+        failure {
+            echo "Pipeline failed!"
+        }
+    }
+}
