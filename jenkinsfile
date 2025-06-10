@@ -34,6 +34,7 @@ pipeline {
                 sh 'npm install -g @angular/cli'
                 sh 'npm ci --include=dev'
                 sh 'npm install @angular-devkit/build-angular --save-dev'
+                
             }
         }
 
