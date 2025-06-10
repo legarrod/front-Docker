@@ -5,7 +5,7 @@ pipeline {
             args '-v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
-    
+
     environment {
         IMAGE_NAME = 'angular-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
@@ -116,7 +116,7 @@ pipeline {
                             echo "Intentando: ${cmd}"
                             def result = sh(script: cmd, returnStatus: true)
                             if (result == 0) {
-                                echo "Build exitoso con: ${cmd}"
+                                echo "Build exitoso con:∫"
                                 buildSuccessful = true
                                 break
                             } else {
