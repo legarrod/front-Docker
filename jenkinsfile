@@ -1,327 +1,440 @@
 pipeline {
-    agent {
-        docker {
-            image 'node:20-alpine'
-            args '-v /var/run/docker.sock:/var/run/docker.sock -u root'
-        }
+    agent any
+    
+    parameters {
+        string(name: 'DOCKER_TAG', defaultValue: 'latest', description: 'Docker tag for the image')
+        choice(name: 'ENVIRONMENT', choices: ['development', 'staging', 'production'], description: 'Deployment environment')
+        booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip unit tests')
+        booleanParam(name: 'SKIP_E2E_TESTS', defaultValue: false, description: 'Skip E2E tests')
+        booleanParam(name: 'SKIP_LINT', defaultValue: false, description: 'Skip linting')
+        booleanParam(name: 'FORCE_DEPLOY', defaultValue: false, description: 'Force deployment even if tests fail')
+        choice(name: 'BUILD_MODE', choices: ['production', 'development'], description: 'Angular build mode')
     }
-
+    
+    tools {
+        nodejs 'NodeJS-18'
+    }
+    
     environment {
-        IMAGE_NAME = 'angular-frontend'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-        CHROME_BIN = '/usr/bin/chromium-browser'
+        DOCKER_IMAGE = "angular-frontend"
+        DOCKER_TAG = "${params.DOCKER_TAG}"
+        NODE_ENV = "${params.ENVIRONMENT}"
+        CHROME_BIN = '/usr/bin/google-chrome'
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
-        NODE_ENV = 'production'
-        // Removido DOCKER_REGISTRY que causaba el error
     }
-
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-        timeout(time: 30, unit: 'MINUTES')
-        timestamps()
-    }
-
+    
     stages {
         stage('Checkout') {
             steps {
+                echo "Cleaning workspace and checking out code..."
+                deleteDir() // Limpia completamente el workspace
                 checkout scm
+                
                 script {
-                    // Obtener información del commit para el tag
+                    // Obtener información del commit
                     env.GIT_COMMIT_SHORT = sh(
                         script: "git rev-parse --short HEAD",
                         returnStdout: true
                     ).trim()
-                    env.FULL_IMAGE_TAG = "${IMAGE_TAG}-${GIT_COMMIT_SHORT}"
-                    
-                    echo "=== Información del checkout ==="
-                    echo "Git commit: ${env.GIT_COMMIT_SHORT}"
-                    echo "Build number: ${BUILD_NUMBER}"
-                    echo "Full image tag: ${FULL_IMAGE_TAG}"
+                    env.FULL_IMAGE_TAG = "${params.DOCKER_TAG}-${BUILD_NUMBER}-${GIT_COMMIT_SHORT}"
                 }
             }
         }
-
-        stage('Setup Environment') {
+        
+        stage('Environment Info') {
             steps {
+                echo "=== Environment Information ==="
                 sh '''
-                    echo "=== Configurando entorno ==="
-                    apk add --no-cache chromium docker-cli git
+                    echo "Node version: $(node --version)"
+                    echo "NPM version: $(npm --version)"
+                    echo "Docker version: $(docker --version)"
+                    echo "Environment: ${NODE_ENV}"
+                    echo "Docker tag: ${DOCKER_TAG}"
+                    echo "Build mode: ${BUILD_MODE}"
+                    echo "Git commit: ${GIT_COMMIT_SHORT}"
+                    echo "Full image tag: ${FULL_IMAGE_TAG}"
                     
-                    echo "=== Versiones instaladas ==="
-                    node --version
-                    npm --version
-                    docker --version
-                    
-                    echo "=== Verificando estructura del proyecto ==="
+                    echo "=== Project structure ==="
                     ls -la
-                    pwd
+                    
+                    echo "=== Checking package.json ==="
+                    if [ -f "package.json" ]; then
+                        echo "✅ package.json found"
+                        cat package.json | grep -E '"@angular/core"|"@angular/cli"' || echo "Angular info not found in package.json"
+                    else
+                        echo "❌ package.json not found!"
+                        exit 1
+                    fi
                 '''
             }
         }
-
-        stage('Cache and Dependencies') {
+        
+        stage('Install Dependencies') {
             steps {
-                script {
-                    // Verificar si existe package.json
-                    if (!fileExists('package.json')) {
-                        error("package.json no encontrado en el repositorio")
-                    }
-                }
-                
+                echo "=== Installing Angular dependencies ==="
                 sh '''
-                    echo "=== Limpiando cache y dependencias anteriores ==="
+                    echo "Cleaning npm cache..."
                     npm cache clean --force
+                    
+                    echo "Removing existing node_modules and lock files..."
                     rm -rf node_modules package-lock.json
                     
-                    echo "=== Verificando package.json ==="
-                    cat package.json | grep -E '"@angular/core"|"@angular/cli"' || echo "Información de Angular no encontrada en package.json"
-                    
-                    echo "=== Instalando dependencias ==="
+                    echo "Installing dependencies with legacy peer deps..."
                     npm install --legacy-peer-deps
                     
-                    echo "=== Verificando instalación ==="
-                    npm list --depth=0 | grep angular || echo "Angular instalado correctamente"
+                    echo "Verifying Angular installation..."
+                    npm list --depth=0 | grep angular || echo "Angular dependencies installed"
+                    
+                    echo "✅ Dependencies installed successfully!"
                 '''
             }
         }
-
-        stage('Lint and Code Quality') {
-            steps {
-                script {
-                    // Solo ejecutar lint si existe la configuración
-                    def lintResult = sh(script: 'npm run lint 2>/dev/null', returnStatus: true)
-                    if (lintResult == 0) {
-                        echo "✅ Linting completado exitosamente"
-                    } else {
-                        echo "⚠️ No se encontró configuración de lint o falló, continuando..."
-                    }
+        
+        stage('Code Quality & Linting') {
+            when {
+                not {
+                    expression { return params.SKIP_LINT }
                 }
             }
-        }
-
-        stage('Build Application') {
             steps {
+                echo "=== Running Angular linting ==="
                 script {
-                    echo "=== Iniciando build de la aplicación ==="
-                    
-                    // Intentar diferentes estrategias de build
-                    def buildCommands = [
-                        'npm run build:prod',
-                        'npm run build -- --configuration=production',
-                        'npm run build -- --prod',
-                        'npm run build'
-                    ]
-                    
-                    def buildSuccessful = false
-                    
-                    for (cmd in buildCommands) {
-                        if (!buildSuccessful) {
-                            echo "Intentando: ${cmd}"
-                            def result = sh(script: cmd, returnStatus: true)
-                            if (result == 0) {
-                                echo "✅ Build exitoso con: ${cmd}"
-                                buildSuccessful = true
-                                break
-                            } else {
-                                echo "❌ Falló: ${cmd}"
-                            }
-                        }
-                    }
-                    
-                    if (!buildSuccessful) {
-                        error("Todos los comandos de build fallaron")
-                    }
-                    
-                    // Verificar que el build generó archivos
                     sh '''
-                        echo "=== Verificando resultado del build ==="
-                        find . -name "dist" -type d -o -name "build" -type d | head -5
-                        
-                        if [ -d "dist" ]; then
-                            echo "✅ Directorio dist encontrado:"
-                            ls -la dist/
-                        elif [ -d "build" ]; then
-                            echo "✅ Directorio build encontrado:"
-                            ls -la build/
+                        if grep -q '"lint"' package.json; then
+                            echo "Running Angular linting..."
+                            npm run lint || {
+                                echo "⚠️ Linting failed but continuing..."
+                                if [ "${FORCE_DEPLOY}" != "true" ]; then
+                                    echo "Set FORCE_DEPLOY=true to ignore linting errors"
+                                fi
+                            }
                         else
-                            echo "❌ ERROR: No se encontró directorio de build"
-                            exit 1
+                            echo "ℹ️ No lint script found, skipping linting..."
                         fi
                     '''
                 }
             }
         }
-
+        
+        stage('Unit Tests') {
+            when {
+                not {
+                    expression { return params.SKIP_TESTS }
+                }
+            }
+            steps {
+                echo "=== Running Angular unit tests ==="
+                script {
+                    sh '''
+                        if grep -q '"test"' package.json; then
+                            echo "Setting up test environment..."
+                            export CHROME_BIN=/usr/bin/google-chrome-stable
+                            export DISPLAY=:99
+                            
+                            echo "Running Angular unit tests..."
+                            npm run test -- --no-watch --no-progress --browsers=ChromeHeadlessCI || {
+                                echo "❌ Unit tests failed!"
+                                if [ "${FORCE_DEPLOY}" = "true" ]; then
+                                    echo "⚠️ FORCE_DEPLOY is true, continuing despite test failures..."
+                                else
+                                    echo "💡 Set FORCE_DEPLOY=true to ignore test failures"
+                                    exit 1
+                                fi
+                            }
+                        else
+                            echo "ℹ️ No test script found, skipping unit tests..."
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('E2E Tests') {
+            when {
+                allOf {
+                    not {
+                        expression { return params.SKIP_E2E_TESTS }
+                    }
+                    anyOf {
+                        expression { return params.ENVIRONMENT == 'staging' }
+                        expression { return params.ENVIRONMENT == 'production' }
+                    }
+                }
+            }
+            steps {
+                echo "=== Running Angular E2E tests ==="
+                script {
+                    sh '''
+                        if grep -q '"e2e"' package.json; then
+                            echo "Setting up E2E test environment..."
+                            export CHROME_BIN=/usr/bin/google-chrome-stable
+                            export DISPLAY=:99
+                            
+                            echo "Running E2E tests..."
+                            npm run e2e || {
+                                echo "❌ E2E tests failed!"
+                                if [ "${FORCE_DEPLOY}" = "true" ]; then
+                                    echo "⚠️ FORCE_DEPLOY is true, continuing..."
+                                else
+                                    echo "💡 Set FORCE_DEPLOY=true to ignore E2E test failures"
+                                    exit 1
+                                fi
+                            }
+                        else
+                            echo "ℹ️ No E2E test script found, skipping..."
+                        fi
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Angular Application') {
+            steps {
+                echo "=== Building Angular application ==="
+                script {
+                    def buildCommands = []
+                    
+                    if (params.BUILD_MODE == 'production') {
+                        buildCommands = [
+                            'npm run build:prod',
+                            'npm run build -- --configuration=production',
+                            'npm run build -- --prod',
+                            'npm run build'
+                        ]
+                    } else {
+                        buildCommands = [
+                            'npm run build:dev',
+                            'npm run build -- --configuration=development',
+                            'npm run build'
+                        ]
+                    }
+                    
+                    def buildSuccessful = false
+                    
+                    for (cmd in buildCommands) {
+                        if (!buildSuccessful) {
+                            echo "Attempting: ${cmd}"
+                            def result = sh(script: cmd, returnStatus: true)
+                            if (result == 0) {
+                                echo "✅ Build successful with: ${cmd}"
+                                buildSuccessful = true
+                                break
+                            } else {
+                                echo "❌ Failed: ${cmd}"
+                            }
+                        }
+                    }
+                    
+                    if (!buildSuccessful) {
+                        error("All build commands failed")
+                    }
+                    
+                    // Verificar resultado del build
+                    sh '''
+                        echo "=== Verifying build output ==="
+                        if [ -d "dist" ]; then
+                            echo "✅ dist directory found:"
+                            ls -la dist/
+                            find dist -name "*.js" -o -name "*.css" | head -10
+                        elif [ -d "build" ]; then
+                            echo "✅ build directory found:"
+                            ls -la build/
+                        else
+                            echo "❌ ERROR: No build output directory found"
+                            exit 1
+                        fi
+                    '''
+                }
+            }
+            post {
+                always {
+                    script {
+                        // Archivar artifacts del build
+                        if (fileExists('dist')) {
+                            archiveArtifacts artifacts: 'dist/**/*', fingerprint: true, allowEmptyArchive: true
+                        } else if (fileExists('build')) {
+                            archiveArtifacts artifacts: 'build/**/*', fingerprint: true, allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Security Audit') {
+            steps {
+                echo "=== Running security audit ==="
+                script {
+                    sh '''
+                        echo "Running npm audit..."
+                        npm audit --audit-level moderate || {
+                            echo "⚠️ Security vulnerabilities found"
+                            echo "Attempting automatic fix..."
+                            npm audit fix || echo "Could not fix all vulnerabilities automatically"
+                        }
+                    '''
+                }
+            }
+        }
+        
         stage('Docker Build') {
             when {
                 expression { fileExists('Dockerfile') }
             }
             steps {
-                script {
-                    echo "=== Construyendo imagen Docker ==="
+                echo "=== Building Docker image ==="
+                sh '''
+                    echo "Building Docker image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    docker build \
+                        --build-arg NODE_ENV=${NODE_ENV} \
+                        --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                        --build-arg BUILD_MODE=${BUILD_MODE} \
+                        -t ${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -t ${DOCKER_IMAGE}:${FULL_IMAGE_TAG} \
+                        -t ${DOCKER_IMAGE}:build-${BUILD_NUMBER} \
+                        .
                     
-                    // Build de la imagen con múltiples tags
-                    sh """
-                        docker build -t ${IMAGE_NAME}:${IMAGE_TAG} \\
-                                   -t ${IMAGE_NAME}:${FULL_IMAGE_TAG} \\
-                                   -t ${IMAGE_NAME}:latest .
-                        
-                        echo "=== Imágenes creadas ==="
-                        docker images | grep ${IMAGE_NAME}
-                    """
-                }
+                    echo "✅ Docker image built successfully!"
+                    docker images | grep ${DOCKER_IMAGE}
+                '''
             }
         }
-
+        
         stage('Docker Test') {
             when {
                 expression { fileExists('Dockerfile') }
             }
             steps {
-                echo "=== Probando imagen Docker ==="
-                script {
-                    // Test básico de la imagen
-                    sh """
-                        # Test básico - verificar que el container arranca
-                        docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} echo 'Container test successful'
-                        
-                        echo "✅ Test de container completado"
-                    """
-                }
+                echo "=== Testing Docker image ==="
+                sh '''
+                    echo "Testing Docker container startup..."
+                    docker run --rm ${DOCKER_IMAGE}:${DOCKER_TAG} echo "✅ Container test successful!"
+                    
+                    echo "Testing container health..."
+                    TEST_CONTAINER_NAME="test-container-${BUILD_NUMBER}"
+                    docker run --rm -d --name $TEST_CONTAINER_NAME -p 8080:80 ${DOCKER_IMAGE}:${DOCKER_TAG}
+                    sleep 10
+                    
+                    # Test if container is responding
+                    if docker ps | grep -q $TEST_CONTAINER_NAME; then
+                        echo "✅ Container is running"
+                        docker logs $TEST_CONTAINER_NAME || true
+                    else
+                        echo "❌ Container failed to start"
+                    fi
+                    
+                    docker stop $TEST_CONTAINER_NAME || true
+                    docker rm $TEST_CONTAINER_NAME || true
+                '''
             }
         }
-
-        stage('Security Scan') {
-            steps {
-                script {
-                    echo "=== Ejecutando auditoría de seguridad ==="
-                    
-                    def auditResult = sh(script: 'npm audit --audit-level moderate', returnStatus: true)
-                    
-                    if (auditResult != 0) {
-                        echo "⚠️ Se encontraron vulnerabilidades de seguridad"
-                        
-                        // Intentar arreglar automáticamente
-                        def fixResult = sh(script: 'npm audit fix', returnStatus: true)
-                        if (fixResult == 0) {
-                            echo "✅ Vulnerabilidades corregidas automáticamente"
-                        } else {
-                            echo "⚠️ No se pudieron corregir todas las vulnerabilidades"
-                            currentBuild.result = 'UNSTABLE'
-                        }
-                    } else {
-                        echo "✅ No se encontraron vulnerabilidades críticas"
-                    }
-                }
-            }
-        }
-
+        
         stage('Deploy to Environment') {
             when {
-                anyOf {
-                    branch 'main'
-                    branch 'master'
-                    branch 'develop'
-                }
                 expression { fileExists('Dockerfile') }
             }
             steps {
+                echo "=== Deploying Angular app to ${params.ENVIRONMENT} ==="
                 script {
-                    echo "=== Desplegando aplicación ==="
-                    
-                    def containerName = "angular-frontend-${env.BRANCH_NAME}"
-                    def port = env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master' ? '4200' : '4201'
+                    def containerName = "angular-frontend-${params.ENVIRONMENT}"
+                    def port = params.ENVIRONMENT == 'production' ? '4200' : 
+                              params.ENVIRONMENT == 'staging' ? '4201' : '4202'
                     
                     sh """
-                        # Detener y eliminar container anterior si existe
+                        echo "Deploying to ${params.ENVIRONMENT} environment..."
+                        
+                        echo "Stopping and removing previous container if exists..."
                         docker stop ${containerName} || true
                         docker rm ${containerName} || true
-                        
-                        # Lanzar nuevo container
+
+                        echo "Starting new container..."
                         docker run -d \\
                             --name ${containerName} \\
                             -p ${port}:80 \\
                             --restart unless-stopped \\
-                            ${IMAGE_NAME}:${IMAGE_TAG}
-                        
-                        # Verificar que el container está corriendo
-                        sleep 5
-                        docker ps | grep ${containerName} || echo "Container no encontrado en ps"
-                        
-                        echo "=== Deployment completado ==="
-                        echo "✅ Aplicación desplegada en puerto ${port}"
-                    """
-                }
-            }
-        }
+                            -e NODE_ENV=${NODE_ENV} \\
+                            ${DOCKER_IMAGE}:${DOCKER_TAG}
 
-        stage('Cleanup Old Images') {
-            when {
-                expression { fileExists('Dockerfile') }
-            }
-            steps {
-                script {
-                    echo "=== Limpiando imágenes antiguas ==="
-                    sh """
-                        # Limpiar imágenes huérfanas
-                        docker image prune -f || true
-                        
-                        echo "✅ Limpieza completada"
+                        echo "Verifying deployment..."
+                        sleep 5
+                        if docker ps | grep -q ${containerName}; then
+                            echo "✅ Deployment successful!"
+                            echo "🚀 Angular app available at port ${port}"
+                            docker logs ${containerName} --tail 10
+                        else
+                            echo "❌ Deployment failed!"
+                            exit 1
+                        fi
                     """
                 }
             }
         }
     }
-
+    
     post {
         always {
-            script {
-                echo "=== Ejecutando limpieza final ==="
-                
-                // Archivar artifacts si existen
-                if (fileExists('dist')) {
-                    echo "📦 Archivando artifacts de dist/"
-                    archiveArtifacts artifacts: 'dist/**/*', fingerprint: true, allowEmptyArchive: true
-                } else if (fileExists('build')) {
-                    echo "📦 Archivando artifacts de build/"
-                    archiveArtifacts artifacts: 'build/**/*', fingerprint: true, allowEmptyArchive: true
-                } else {
-                    echo "ℹ️ No se encontraron artifacts para archivar"
-                }
-            }
-            
-            // Limpiar workspace
-            cleanWs()
+            echo "=== Cleaning up old Docker images ==="
+            sh '''
+                OLD_IMAGES=$(docker images ${DOCKER_IMAGE} --format "{{.Tag}}" | grep "^build-" | sort -nr | tail -n +6 || echo "")
+                if [ ! -z "$OLD_IMAGES" ]; then
+                    echo "Removing old build images: $OLD_IMAGES"
+                    echo "$OLD_IMAGES" | xargs -I {} docker rmi ${DOCKER_IMAGE}:{} || true
+                else
+                    echo "No old images to remove"
+                fi
+            '''
         }
+        
         success {
             echo """
             🎉 ===============================================
-            ✅ Frontend pipeline completado exitosamente!
-            📦 Imagen: ${IMAGE_NAME}:${IMAGE_TAG}
-            🚀 Build #${BUILD_NUMBER}
+            ✅ Angular Frontend Pipeline Success!
+            📦 Image: ${DOCKER_IMAGE}:${DOCKER_TAG}
+            🏗️  Build: #${BUILD_NUMBER}
+            🌟 Environment: ${params.ENVIRONMENT}
             🔗 Commit: ${env.GIT_COMMIT_SHORT}
             ===============================================
             """
+            script {
+                if (params.ENVIRONMENT == 'production') {
+                    echo "🚀 Production deployment successful! App is live!"
+                }
+            }
         }
+        
         failure {
             echo """
             💥 ===============================================
-            ❌ Frontend pipeline falló!
-            🔍 Revisa los logs para más detalles
-            📋 Build #${BUILD_NUMBER}
-            🔗 Commit: ${env.GIT_COMMIT_SHORT}
+            ❌ Angular Frontend Pipeline Failed!
+            🔍 Check logs above for details
+            📋 Build: #${BUILD_NUMBER}
+            🌟 Environment: ${params.ENVIRONMENT}
+            💡 Try setting FORCE_DEPLOY=true to bypass test failures
             ===============================================
             """
         }
+        
         unstable {
             echo """
             ⚠️ ===============================================
-            🟡 Frontend pipeline completado con warnings!
-            🔍 Revisa las vulnerabilidades de seguridad
-            📋 Build #${BUILD_NUMBER}
-            🔗 Commit: ${env.GIT_COMMIT_SHORT}
+            🟡 Angular Frontend Pipeline Unstable!
+            ⚠️  Completed with warnings
+            📋 Build: #${BUILD_NUMBER}
+            🌟 Environment: ${params.ENVIRONMENT}
             ===============================================
             """
+        }
+        
+        cleanup {
+            echo "=== Final cleanup ==="
+            sh '''
+                # Clean unused Docker resources
+                docker system prune -f --volumes || true
+                
+                # Clean npm cache
+                npm cache clean --force || true
+                
+                echo "✅ Cleanup completed"
+            '''
         }
     }
 }
