@@ -85,7 +85,7 @@ pipeline {
             stage('Deploy to Environment') {
                 steps {
                     echo "Deploying main..."
-                    sh """
+                    sh '''
                         CONTAINER_NAME="angular-frontend-dev"
                         echo "Stopping and removing previous container if exists..."
                         docker stop \$CONTAINER_NAME || true
@@ -98,7 +98,7 @@ pipeline {
                             ${IMAGE_NAME}:${IMAGE_TAG}
 
                         echo "Deployment completed!"
-                    """
+                    '''
                 }
             }
         
