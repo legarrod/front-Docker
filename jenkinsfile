@@ -22,30 +22,24 @@ pipeline {
                 sh 'npm ci'
             }
         }
-        
-        stage('Lint') {
+            
+        stage('Test') {
             steps {
-                sh 'npm run lint'
+                sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'coverage',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
             }
         }
-        
-        //stage('Test') {
-        //    steps {
-        //        sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
-        //    }
-        //    post {
-        //        always {
-        //            publishHTML([
-        //                allowMissing: false,
-        //                alwaysLinkToLastBuild: true,
-        //                keepAll: true,
-        //                reportDir: 'coverage',
-        //                reportFiles: 'index.html',
-        //                reportName: 'Coverage Report'
-        //            ])
-        //        }
-        //    }
-        //}
         
         stage('Build') {
             steps {
