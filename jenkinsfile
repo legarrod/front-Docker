@@ -1,119 +1,114 @@
 pipeline {
-    agent any
-    
-    tools {
-        nodejs 'NodeJS-18-Latest'  // o 'NodeJS-20' si tienes Node 20 configurado
+    agent {
+        docker {
+            image 'node:20-alpine'
+            args '-v /var/run/docker.sock:/var/run/docker.sock'
+        }
     }
     
     environment {
         IMAGE_NAME = 'angular-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
+        CHROME_BIN = '/usr/bin/chromium-browser'
+        PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
     }
     
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
-            
-        stage('Build Docker Image') {
-            agent any
+            }
+        }
+        
+        stage('Setup Environment') {
+            steps {
+                sh '''
+                    # Instalar dependencias del sistema necesarias
+                    apk add --no-cache chromium docker-cli
+                    
+                    # Verificar versiones
+                    node --version
+                    npm --version
+                    chromium-browser --version || echo "Chromium installed"
+                '''
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm ci'
+            }
+        }
+        
+        stage('Lint') {
             steps {
                 script {
-                    // Usa el Dockerfile de producción
-                    def image = docker.build("${IMAGE_NAME}:${IMAGE_TAG}", "-f Dockerfile.prod .")
-                    docker.build("${IMAGE_NAME}:latest", "-f Dockerfile.prod .")
+                    try {
+                        sh 'npm run lint'
+                    } catch (Exception e) {
+                        echo "Lint warnings/errors found: ${e.getMessage()}"
+                        // Descomenta la siguiente línea si quieres que continue con warnings
+                        // currentBuild.result = 'UNSTABLE'
+                        // Comenta la siguiente línea si no quieres que falle por lint
+                        throw e
+                    }
                 }
             }
         }
-        }
         
-pipeline {
-    agent any
-    
-    environment {
-        IMAGE_NAME = 'angular-frontend'
-        IMAGE_TAG = "${BUILD_NUMBER}"
-    }
-    
-    stages {
-        stage('Checkout') {
+        stage('Test') {
             steps {
-                checkout scm
+                sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'coverage',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
             }
         }
         
-        stage('Build & Test with Docker') {
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    args '-v ${PWD}:/app -w /app'
+        stage('Build') {
+            steps {
+                sh 'npm run build -- --configuration=production'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
                 }
             }
-            stages {
-                stage('Install Dependencies') {
-                    steps {
-                        sh 'npm ci'
-                    }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Construir imagen con el tag del build number
+                    def image = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
+                    
+                    // También crear tag latest
+                    docker.build("${IMAGE_NAME}:latest")
+                    
+                    echo "Docker images built successfully:"
+                    echo "- ${IMAGE_NAME}:${IMAGE_TAG}"
+                    echo "- ${IMAGE_NAME}:latest"
                 }
-                
-                stage('Lint') {
-                    steps {
-                        script {
-                            try {
-                                sh 'npm run lint'
-                            } catch (Exception e) {
-                                echo "Lint warnings/errors found: ${e.getMessage()}"
-                                throw e
-                            }
-                        }
-                    }
-                }
-                
-                stage('Test') {
-                    steps {
-                        sh '''
-                            # Instalar dependencias necesarias para tests
-                            apk add --no-cache chromium
-                            export CHROME_BIN=/usr/bin/chromium-browser
-                            export PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-                            npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage
-                        '''
-                    }
-                    post {
-                        always {
-                            publishHTML([
-                                allowMissing: false,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'coverage',
-                                reportFiles: 'index.html',
-                                reportName: 'Coverage Report'
-                            ])
-                        }
-                    }
-                }
-                
-                stage('Build') {
-                    steps {
-                        sh 'npm run build -- --configuration=production'
-                    }
-                    post {
-                        always {
-                            archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
-                        }
-                    }
-                }
-                
-                stage('Security Scan') {
-                    steps {
-                        script {
-                            try {
-                                sh 'npm audit --audit-level high'
-                            } catch (Exception e) {
-                                echo "Security vulnerabilities found: ${e.getMessage()}"
-                                currentBuild.result = 'UNSTABLE'
-                            }
-                        }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                script {
+                    try {
+                        sh 'npm audit --audit-level high'
+                    } catch (Exception e) {
+                        echo "Security vulnerabilities found: ${e.getMessage()}"
+                        currentBuild.result = 'UNSTABLE'
                     }
                 }
             }
@@ -126,6 +121,7 @@ pipeline {
         }
         success {
             echo 'Frontend pipeline completed successfully!'
+            echo "Docker image ready: ${IMAGE_NAME}:${IMAGE_TAG}"
         }
         failure {
             echo 'Frontend pipeline failed!'
