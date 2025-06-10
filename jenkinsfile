@@ -5,7 +5,7 @@ pipeline {
             args '-v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
-
+    
     environment {
         IMAGE_NAME = 'angular-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
