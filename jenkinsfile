@@ -11,6 +11,7 @@ pipeline {
         IMAGE_TAG = "${BUILD_NUMBER}"
         CHROME_BIN = '/usr/bin/chromium-browser'
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
+        NODE_ENV = 'production'
     }
 
     stages {
