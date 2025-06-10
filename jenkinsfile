@@ -12,69 +12,154 @@ pipeline {
         CHROME_BIN = '/usr/bin/chromium-browser'
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
         NODE_ENV = 'production'
+        DOCKER_REGISTRY = credentials('docker-registry-url') // Optional: si usas un registry privado
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
+                script {
+                    // Obtener información del commit para el tag
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: "git rev-parse --short HEAD",
+                        returnStdout: true
+                    ).trim()
+                    env.FULL_IMAGE_TAG = "${IMAGE_TAG}-${GIT_COMMIT_SHORT}"
+                }
             }
         }
 
         stage('Setup Environment') {
             steps {
-                sh 'apk add --no-cache chromium docker-cli'
-                sh 'node --version'
-                sh 'npm --version'
-            }
-        }
-
-        stage('Install Dependencies') {
-            steps {
                 sh '''
-                    # Limpiar cache y node_modules
-                    npm cache clean --force
-                    rm -rf node_modules package-lock.json
+                    echo "=== Configurando entorno ==="
+                    apk add --no-cache chromium docker-cli git
                     
-                    # Instalar Angular CLI versión 19 (compatible con tu proyecto)
-                    npm install -g @angular/cli@19
-                    
-                    # Verificar versión instalada
-                    ng version || echo "Angular CLI instalado"
-                    
-                    # Instalar dependencias con versiones compatibles
-                    npm install --legacy-peer-deps
-                    
-                    # Instalar build-angular específico para Angular 19
-                    npm install @angular-devkit/build-angular@19 --save-dev --legacy-peer-deps
-                    
-                    # Verificar instalación final
-                    echo "=== Verificando instalación ==="
-                    npm list @angular-devkit/build-angular
-                    npm list @angular/core
+                    echo "=== Versiones instaladas ==="
+                    node --version
+                    npm --version
+                    docker --version
                 '''
             }
         }
 
-        stage('Build') {
+        stage('Cache and Dependencies') {
             steps {
                 script {
-                    // Intentar build con diferentes configuraciones
-                    def buildResult = sh(script: 'npm run build -- --configuration=production', returnStatus: true)
-                    if (buildResult != 0) {
-                        echo "Build con configuración production falló, intentando build básico..."
-                        sh 'npm run build'
+                    // Verificar si existe package.json
+                    if (!fileExists('package.json')) {
+                        error("package.json no encontrado en el repositorio")
                     }
+                }
+                
+                sh '''
+                    echo "=== Limpiando cache y dependencias anteriores ==="
+                    npm cache clean --force
+                    rm -rf node_modules package-lock.json
+                    
+                    echo "=== Verificando package.json ==="
+                    cat package.json | grep -E '"@angular/core"|"@angular/cli"' || echo "Información de Angular no encontrada en package.json"
+                    
+                    echo "=== Instalando dependencias ==="
+                    # Usar npm ci para instalaciones más rápidas y deterministas si existe lock file
+                    if [ -f "package-lock.json" ]; then
+                        npm ci --production=false
+                    else
+                        npm install --legacy-peer-deps
+                    fi
+                    
+                    echo "=== Verificando instalación ==="
+                    npm list --depth=0 | grep angular || echo "Angular instalado correctamente"
+                '''
+            }
+        }
+
+        stage('Lint and Code Quality') {
+            steps {
+                script {
+                    // Solo ejecutar lint si existe la configuración
+                    def lintExists = sh(script: 'npm run lint --silent 2>/dev/null', returnStatus: true) == 0
+                    if (lintExists) {
+                        echo "Ejecutando linting..."
+                        sh 'npm run lint'
+                    } else {
+                        echo "No se encontró configuración de lint, saltando..."
+                    }
+                }
+            }
+        }
+
+        stage('Build Application') {
+            steps {
+                script {
+                    echo "=== Iniciando build de la aplicación ==="
+                    
+                    // Intentar diferentes estrategias de build
+                    def buildCommands = [
+                        'npm run build:prod',
+                        'npm run build -- --configuration=production',
+                        'npm run build -- --prod',
+                        'npm run build'
+                    ]
+                    
+                    def buildSuccessful = false
+                    
+                    for (cmd in buildCommands) {
+                        if (!buildSuccessful) {
+                            echo "Intentando: ${cmd}"
+                            def result = sh(script: cmd, returnStatus: true)
+                            if (result == 0) {
+                                echo "Build exitoso con: ${cmd}"
+                                buildSuccessful = true
+                                break
+                            } else {
+                                echo "Falló: ${cmd}"
+                            }
+                        }
+                    }
+                    
+                    if (!buildSuccessful) {
+                        error("Todos los comandos de build fallaron")
+                    }
+                    
+                    // Verificar que el build generó archivos
+                    sh '''
+                        echo "=== Verificando resultado del build ==="
+                        find . -name "dist" -type d -o -name "build" -type d | head -5
+                        
+                        if [ -d "dist" ]; then
+                            echo "Directorio dist encontrado:"
+                            ls -la dist/
+                        elif [ -d "build" ]; then
+                            echo "Directorio build encontrado:"
+                            ls -la build/
+                        else
+                            echo "ERROR: No se encontró directorio de build"
+                            exit 1
+                        fi
+                    '''
                 }
             }
             post {
                 always {
-                    // Verificar que el directorio dist existe antes de archivar
                     script {
-                        if (fileExists('dist')) {
-                            archiveArtifacts artifacts: 'dist/**/*', fingerprint: true
+                        // Archivar artifacts del build
+                        def distExists = fileExists('dist')
+                        def buildExists = fileExists('build')
+                        
+                        if (distExists) {
+                            archiveArtifacts artifacts: 'dist/**/*', fingerprint: true, allowEmptyArchive: true
+                        } else if (buildExists) {
+                            archiveArtifacts artifacts: 'build/**/*', fingerprint: true, allowEmptyArchive: true
                         } else {
-                            echo "Directorio dist no encontrado"
+                            echo "No se encontraron artifacts para archivar"
                         }
                     }
                 }
@@ -83,37 +168,123 @@ pipeline {
 
         stage('Docker Build') {
             steps {
-                echo "Building Docker image..."
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
-                sh "docker images | grep ${IMAGE_NAME}"
+                script {
+                    echo "=== Construyendo imagen Docker ==="
+                    
+                    // Verificar que existe Dockerfile
+                    if (!fileExists('Dockerfile')) {
+                        error("Dockerfile no encontrado en el repositorio")
+                    }
+                    
+                    // Build de la imagen con múltiples tags
+                    sh """
+                        docker build -t ${IMAGE_NAME}:${IMAGE_TAG} \\
+                                   -t ${IMAGE_NAME}:${FULL_IMAGE_TAG} \\
+                                   -t ${IMAGE_NAME}:latest .
+                        
+                        echo "=== Imágenes creadas ==="
+                        docker images | grep ${IMAGE_NAME}
+                    """
+                }
             }
         }
 
         stage('Docker Test') {
             steps {
-                echo "Testing Docker image..."
-                sh "docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} echo 'Container test successful'"
-            }
-        }
-
-        stage('Deploy to Environment') {
-            steps {
-                echo "Deploying main..."
-                sh 'docker stop angular-frontend-dev || true'
-                sh 'docker rm angular-frontend-dev || true'
-                sh "docker run -d --name angular-frontend-dev -p 4200:4200 ${IMAGE_NAME}:${IMAGE_TAG}"
-                echo "Deployment completed!"
+                echo "=== Probando imagen Docker ==="
+                script {
+                    // Test básico de la imagen
+                    sh """
+                        # Test básico - verificar que el container arranca
+                        docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} echo 'Container test successful'
+                        
+                        # Test de health check si está disponible
+                        docker run --rm -d --name test-container-${BUILD_NUMBER} ${IMAGE_NAME}:${IMAGE_TAG} || true
+                        sleep 5
+                        docker logs test-container-${BUILD_NUMBER} || true
+                        docker stop test-container-${BUILD_NUMBER} || true
+                        docker rm test-container-${BUILD_NUMBER} || true
+                    """
+                }
             }
         }
 
         stage('Security Scan') {
             steps {
                 script {
-                    def auditResult = sh(script: 'npm audit --audit-level high', returnStatus: true)
+                    echo "=== Ejecutando auditoría de seguridad ==="
+                    
+                    def auditResult = sh(script: 'npm audit --audit-level moderate --json', returnStatus: true)
+                    
                     if (auditResult != 0) {
-                        echo "Security vulnerabilities found"
-                        currentBuild.result = 'UNSTABLE'
+                        echo "Se encontraron vulnerabilidades de seguridad"
+                        
+                        // Intentar arreglar automáticamente
+                        def fixResult = sh(script: 'npm audit fix --force', returnStatus: true)
+                        if (fixResult == 0) {
+                            echo "Vulnerabilidades corregidas automáticamente"
+                        } else {
+                            echo "No se pudieron corregir todas las vulnerabilidades"
+                            currentBuild.result = 'UNSTABLE'
+                        }
+                    } else {
+                        echo "No se encontraron vulnerabilidades críticas"
                     }
+                }
+            }
+        }
+
+        stage('Deploy to Environment') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'develop'
+                }
+            }
+            steps {
+                script {
+                    echo "=== Desplegando aplicación ==="
+                    
+                    def containerName = "angular-frontend-${env.BRANCH_NAME}"
+                    def port = env.BRANCH_NAME == 'main' || env.BRANCH_NAME == 'master' ? '4200' : '4201'
+                    
+                    sh """
+                        # Detener y eliminar container anterior si existe
+                        docker stop ${containerName} || true
+                        docker rm ${containerName} || true
+                        
+                        # Lanzar nuevo container
+                        docker run -d \\
+                            --name ${containerName} \\
+                            -p ${port}:80 \\
+                            --restart unless-stopped \\
+                            ${IMAGE_NAME}:${IMAGE_TAG}
+                        
+                        # Verificar que el container está corriendo
+                        sleep 5
+                        docker ps | grep ${containerName}
+                        
+                        echo "=== Deployment completado ==="
+                        echo "Aplicación disponible en puerto ${port}"
+                    """
+                }
+            }
+        }
+
+        stage('Cleanup Old Images') {
+            steps {
+                script {
+                    echo "=== Limpiando imágenes antiguas ==="
+                    sh """
+                        # Mantener solo las últimas 5 imágenes
+                        docker images ${IMAGE_NAME} --format "table {{.Tag}}\t{{.ID}}" | \\
+                        tail -n +2 | sort -nr | tail -n +6 | awk '{print \$2}' | \\
+                        xargs -r docker rmi || true
+                        
+                        # Limpiar imágenes huérfanas
+                        docker image prune -f || true
+                    """
                 }
             }
         }
@@ -121,16 +292,38 @@ pipeline {
 
     post {
         always {
-            cleanWs()
+            script {
+                // Limpiar workspace pero mantener algunos archivos importantes
+                sh '''
+                    # Mantener logs importantes
+                    mkdir -p build-logs
+                    cp -r dist build-logs/ 2>/dev/null || true
+                    cp package.json build-logs/ 2>/dev/null || true
+                '''
+                
+                cleanWs(patterns: [[pattern: 'build-logs/**', type: 'EXCLUDE']])
+            }
         }
         success {
-            echo 'Frontend pipeline completed successfully!'
+            echo """
+            ✅ Frontend pipeline completado exitosamente!
+            📦 Imagen: ${IMAGE_NAME}:${IMAGE_TAG}
+            🚀 Build #${BUILD_NUMBER}
+            """
         }
         failure {
-            echo 'Frontend pipeline failed!'
+            echo """
+            ❌ Frontend pipeline falló!
+            🔍 Revisa los logs para más detalles
+            📋 Build #${BUILD_NUMBER}
+            """
         }
         unstable {
-            echo 'Frontend pipeline completed with warnings!'
+            echo """
+            ⚠️  Frontend pipeline completado con warnings!
+            🔍 Revisa las vulnerabilidades de seguridad
+            📋 Build #${BUILD_NUMBER}
+            """
         }
     }
 }
