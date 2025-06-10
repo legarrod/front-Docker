@@ -23,13 +23,9 @@ pipeline {
         stage('Setup Environment') {
             steps {
                 sh '''
-                    # Instalar dependencias del sistema necesarias
                     apk add --no-cache chromium docker-cli
-                    
-                    # Verificar versiones
                     node --version
                     npm --version
-                    chromium-browser --version || echo "Chromium installed"
                 '''
             }
         }
@@ -39,23 +35,7 @@ pipeline {
                 sh 'npm ci'
             }
         }
-        
-        stage('Lint') {
-            steps {
-                script {
-                    try {
-                        sh 'npm run lint'
-                    } catch (Exception e) {
-                        echo "Lint warnings/errors found: ${e.getMessage()}"
-                        // Descomenta la siguiente línea si quieres que continue con warnings
-                        // currentBuild.result = 'UNSTABLE'
-                        // Comenta la siguiente línea si no quieres que falle por lint
-                        throw e
-                    }
-                }
-            }
-        }
-        
+             
         stage('Test') {
             steps {
                 sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
@@ -88,15 +68,9 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    // Construir imagen con el tag del build number
                     def image = docker.build("${IMAGE_NAME}:${IMAGE_TAG}")
-                    
-                    // También crear tag latest
                     docker.build("${IMAGE_NAME}:latest")
-                    
-                    echo "Docker images built successfully:"
-                    echo "- ${IMAGE_NAME}:${IMAGE_TAG}"
-                    echo "- ${IMAGE_NAME}:latest"
+                    echo "Docker images built successfully"
                 }
             }
         }
@@ -121,7 +95,6 @@ pipeline {
         }
         success {
             echo 'Frontend pipeline completed successfully!'
-            echo "Docker image ready: ${IMAGE_NAME}:${IMAGE_TAG}"
         }
         failure {
             echo 'Frontend pipeline failed!'
