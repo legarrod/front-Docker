@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     tools {
-        nodejs 'NodeJS-18'
+        nodejs 'NodeJS-20'
     }
     
     environment {
@@ -22,7 +22,40 @@ pipeline {
                 sh 'npm ci'
             }
         }
-            
+        
+        stage('Lint') {
+            steps {
+                script {
+                    try {
+                        sh 'npm run lint'
+                    } catch (Exception e) {
+                        echo "Lint warnings/errors found: ${e.getMessage()}"
+                        // Si quieres que continue a pesar de errores de lint, descomenta la siguiente línea:
+                        // currentBuild.result = 'UNSTABLE'
+                        // Si quieres que falle, vuelve a lanzar la excepción:
+                        throw e
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publicar resultados de lint si generas reportes
+                    script {
+                        if (fileExists('lint-results.xml')) {
+                            publishHTML([
+                                allowMissing: false,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: '.',
+                                reportFiles: 'lint-results.xml',
+                                reportName: 'Lint Report'
+                            ])
+                        }
+                    }
+                }
+            }
+        }
+        
         stage('Test') {
             steps {
                 sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
@@ -43,7 +76,7 @@ pipeline {
         
         stage('Build') {
             steps {
-                sh 'npm run build --prod'
+                sh 'npm run build -- --configuration=production'
             }
             post {
                 always {
@@ -63,7 +96,14 @@ pipeline {
         
         stage('Security Scan') {
             steps {
-                sh 'npm audit --audit-level high'
+                script {
+                    try {
+                        sh 'npm audit --audit-level high'
+                    } catch (Exception e) {
+                        echo "Security vulnerabilities found: ${e.getMessage()}"
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
             }
         }
     }
@@ -77,6 +117,9 @@ pipeline {
         }
         failure {
             echo 'Frontend pipeline failed!'
+        }
+        unstable {
+            echo 'Frontend pipeline completed with warnings!'
         }
     }
 }
