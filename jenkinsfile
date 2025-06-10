@@ -5,21 +5,21 @@ pipeline {
             args '-v /var/run/docker.sock:/var/run/docker.sock'
         }
     }
-    
+
     environment {
         IMAGE_NAME = 'angular-frontend'
         IMAGE_TAG = "${BUILD_NUMBER}"
         CHROME_BIN = '/usr/bin/chromium-browser'
         PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true'
     }
-    
+
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
-        
+
         stage('Setup Environment') {
             steps {
                 sh '''
@@ -29,13 +29,13 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Install Dependencies') {
             steps {
                 sh 'npm ci'
             }
         }
-                  
+
         stage('Build') {
             steps {
                 sh 'npm run build -- --configuration=production'
@@ -46,7 +46,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('Docker Build') {
             steps {
                 echo "Building Docker image..."
@@ -81,27 +81,27 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('Deploy to Environment') {
             steps {
-                    echo "Deploying main..."
-                    sh '''
-                        CONTAINER_NAME="angular-frontend-dev"
-                        echo "Stopping and removing previous container if exists..."
-                        docker stop \$CONTAINER_NAME || true
-                        docker rm \$CONTAINER_NAME || true
+                echo "Deploying main..."
+                sh '''
+                    CONTAINER_NAME="angular-frontend-dev"
+                    echo "Stopping and removing previous container if exists..."
+                    docker stop $CONTAINER_NAME || true
+                    docker rm $CONTAINER_NAME || true
 
-                        echo "Starting new container..."
-                        docker run -d \
-                            --name \$CONTAINER_NAME \
-                            -p 4200:4200 \
-                            \${IMAGE_NAME}:\${IMAGE_TAG}
+                    echo "Starting new container..."
+                    docker run -d \
+                        --name $CONTAINER_NAME \
+                        -p 4200:4200 \
+                        $IMAGE_NAME:$IMAGE_TAG
 
-                        echo "Deployment completed!"
-                    '''
-                }
-            }    
-        
+                    echo "Deployment completed!"
+                '''
+            }
+        }
+
         stage('Security Scan') {
             steps {
                 script {
@@ -115,7 +115,7 @@ pipeline {
             }
         }
     }
-    
+
     post {
         always {
             cleanWs()
