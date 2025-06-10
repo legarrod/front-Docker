@@ -49,9 +49,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 echo "Building Docker image..."
-                sh "echo 'Building Docker image: ${IMAGE_NAME}:${IMAGE_TAG}'"
-                sh "docker build --build-arg NODE_ENV=${NODE_ENV} --build-arg BUILD_NUMBER=${BUILD_NUMBER} -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:build-${BUILD_NUMBER} ."
-                sh "echo 'Docker image built successfully!'"
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
                 sh "docker images | grep ${IMAGE_NAME}"
             }
         }
@@ -59,31 +57,26 @@ pipeline {
         stage('Docker Test') {
             steps {
                 echo "Testing Docker image..."
-                sh "echo 'Testing Docker container...'"
-                sh "docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} echo 'Container test successful!'"
+                sh "docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} echo 'Container test successful'"
             }
         }
 
         stage('Deploy to Environment') {
             steps {
                 echo "Deploying main..."
-                sh 'CONTAINER_NAME="angular-frontend-dev"'
-                sh 'echo "Stopping and removing previous container if exists..."'
                 sh 'docker stop angular-frontend-dev || true'
                 sh 'docker rm angular-frontend-dev || true'
-                sh 'echo "Starting new container..."'
                 sh "docker run -d --name angular-frontend-dev -p 4200:4200 ${IMAGE_NAME}:${IMAGE_TAG}"
-                sh 'echo "Deployment completed!"'
+                echo "Deployment completed!"
             }
         }
 
         stage('Security Scan') {
             steps {
                 script {
-                    try {
-                        sh 'npm audit --audit-level high'
-                    } catch (Exception e) {
-                        echo "Security vulnerabilities found: ${e.getMessage()}"
+                    def auditResult = sh(script: 'npm audit --audit-level high', returnStatus: true)
+                    if (auditResult != 0) {
+                        echo "Security vulnerabilities found"
                         currentBuild.result = 'UNSTABLE'
                     }
                 }
