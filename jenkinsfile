@@ -82,8 +82,8 @@ pipeline {
             }
         }
         
-            stage('Deploy to Environment') {
-                steps {
+        stage('Deploy to Environment') {
+            steps {
                     echo "Deploying main..."
                     sh '''
                         CONTAINER_NAME="angular-frontend-dev"
@@ -95,12 +95,12 @@ pipeline {
                         docker run -d \
                             --name \$CONTAINER_NAME \
                             -p 4200:4200 \
-                            ${IMAGE_NAME}:${IMAGE_TAG}
+                            \${IMAGE_NAME}:\${IMAGE_TAG}
 
                         echo "Deployment completed!"
                     '''
                 }
-            }
+            }    
         
         stage('Security Scan') {
             steps {
